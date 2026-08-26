@@ -1,131 +1,169 @@
 /*
- * The ARC4 stream cipher.
+ * Cryptographic API
  *
- * Copyright (c) 2009 Joshua Oreman <oremanj@rwcr.net>.
+ * ARC4 Cipher Algorithm
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of the
- * License, or any later version.
+ * Jon Oberheide <jon@oberheide.org>
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-FILE_LICENCE ( GPL2_OR_LATER );
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/crypto.h>
+#include <crypto/algapi.h>
 
-#include <gpxe/crypto.h>
-#include <gpxe/arc4.h>
+#define ARC4_MIN_KEY_SIZE	1
+#define ARC4_MAX_KEY_SIZE	256
+#define ARC4_BLOCK_SIZE		1
 
-#define SWAP( ary, i, j )	\
-	({ u8 temp = ary[i]; ary[i] = ary[j]; ary[j] = temp; })
+struct arc4_ctx {
+	u32 S[256];
+	u32 x, y;
+};
 
-/**
- * Set ARC4 key
- *
- * @v ctxv	ARC4 encryption context
- * @v keyv	Key to set
- * @v keylen	Length of key
- *
- * If an initialisation vector is to be used, it should be prepended
- * to the key; ARC4 does not implement the @c setiv function because
- * there is no standard length for an initialisation vector in the
- * cipher.
- */
-static int arc4_setkey ( void *ctxv, const void *keyv, size_t keylen )
+static int arc4_set_key(struct crypto_tfm *tfm, const u8 *in_key,
+			unsigned int key_len)
 {
-	struct arc4_ctx *ctx = ctxv;
-	const u8 *key = keyv;
-	u8 *S = ctx->state;
-	int i, j;
+	struct arc4_ctx *ctx = crypto_tfm_ctx(tfm);
+	int i, j = 0, k = 0;
 
-	for ( i = 0; i < 256; i++ ) {
-		S[i] = i;
+	ctx->x = 1;
+	ctx->y = 0;
+
+	for (i = 0; i < 256; i++)
+		ctx->S[i] = i;
+
+	for (i = 0; i < 256; i++) {
+		u32 a = ctx->S[i];
+		j = (j + in_key[k] + a) & 0xff;
+		ctx->S[i] = ctx->S[j];
+		ctx->S[j] = a;
+		if (++k >= key_len)
+			k = 0;
 	}
 
-	for ( i = j = 0; i < 256; i++ ) {
-		j = ( j + S[i] + key[i % keylen] ) & 0xff;
-		SWAP ( S, i, j );
-	}
-
-	ctx->i = ctx->j = 0;
 	return 0;
 }
 
-/**
- * Perform ARC4 encryption or decryption
- *
- * @v ctxv	ARC4 encryption context
- * @v srcv	Data to encrypt or decrypt
- * @v dstv	Location to store encrypted or decrypted data
- * @v len	Length of data to operate on
- *
- * ARC4 is a stream cipher that works by generating a stream of PRNG
- * data based on the key, and XOR'ing it with the data to be
- * encrypted. Since XOR is symmetric, encryption and decryption in
- * ARC4 are the same operation.
- *
- * If you pass a @c NULL source or destination pointer, @a len
- * keystream bytes will be consumed without encrypting any data.
- */
-static void arc4_xor ( void *ctxv, const void *srcv, void *dstv,
-		       size_t len )
+static void arc4_crypt(struct arc4_ctx *ctx, u8 *out, const u8 *in,
+		       unsigned int len)
 {
-	struct arc4_ctx *ctx = ctxv;
-	const u8 *src = srcv;
-	u8 *dst = dstv;
-	u8 *S = ctx->state;
-	int i = ctx->i, j = ctx->j;
+	u32 *const S = ctx->S;
+	u32 x, y, a, b;
+	u32 ty, ta, tb;
 
-	while ( len-- ) {
-		i = ( i + 1 ) & 0xff;
-		j = ( j + S[i] ) & 0xff;
-		SWAP ( S, i, j );
-		if ( srcv && dstv )
-			*dst++ = *src++ ^ S[(S[i] + S[j]) & 0xff];
+	if (len == 0)
+		return;
+
+	x = ctx->x;
+	y = ctx->y;
+
+	a = S[x];
+	y = (y + a) & 0xff;
+	b = S[y];
+
+	do {
+		S[y] = a;
+		a = (a + b) & 0xff;
+		S[x] = b;
+		x = (x + 1) & 0xff;
+		ta = S[x];
+		ty = (y + ta) & 0xff;
+		tb = S[ty];
+		*out++ = *in++ ^ S[a];
+		if (--len == 0)
+			break;
+		y = ty;
+		a = ta;
+		b = tb;
+	} while (true);
+
+	ctx->x = x;
+	ctx->y = y;
+}
+
+static void arc4_crypt_one(struct crypto_tfm *tfm, u8 *out, const u8 *in)
+{
+	arc4_crypt(crypto_tfm_ctx(tfm), out, in, 1);
+}
+
+static int ecb_arc4_crypt(struct blkcipher_desc *desc, struct scatterlist *dst,
+			  struct scatterlist *src, unsigned int nbytes)
+{
+	struct arc4_ctx *ctx = crypto_blkcipher_ctx(desc->tfm);
+	struct blkcipher_walk walk;
+	int err;
+
+	blkcipher_walk_init(&walk, dst, src, nbytes);
+
+	err = blkcipher_walk_virt(desc, &walk);
+
+	while (walk.nbytes > 0) {
+		u8 *wsrc = walk.src.virt.addr;
+		u8 *wdst = walk.dst.virt.addr;
+
+		arc4_crypt(ctx, wdst, wsrc, walk.nbytes);
+
+		err = blkcipher_walk_done(desc, &walk, 0);
 	}
 
-	ctx->i = i;
-	ctx->j = j;
+	return err;
 }
 
-static void arc4_setiv ( void *ctx __unused, const void *iv __unused )
+static struct crypto_alg arc4_algs[2] = { {
+	.cra_name		=	"arc4",
+	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
+	.cra_blocksize		=	ARC4_BLOCK_SIZE,
+	.cra_ctxsize		=	sizeof(struct arc4_ctx),
+	.cra_module		=	THIS_MODULE,
+	.cra_u			=	{
+		.cipher = {
+			.cia_min_keysize	=	ARC4_MIN_KEY_SIZE,
+			.cia_max_keysize	=	ARC4_MAX_KEY_SIZE,
+			.cia_setkey		=	arc4_set_key,
+			.cia_encrypt		=	arc4_crypt_one,
+			.cia_decrypt		=	arc4_crypt_one,
+		},
+	},
+}, {
+	.cra_name		=	"ecb(arc4)",
+	.cra_priority		=	100,
+	.cra_flags		=	CRYPTO_ALG_TYPE_BLKCIPHER,
+	.cra_blocksize		=	ARC4_BLOCK_SIZE,
+	.cra_ctxsize		=	sizeof(struct arc4_ctx),
+	.cra_alignmask		=	0,
+	.cra_type		=	&crypto_blkcipher_type,
+	.cra_module		=	THIS_MODULE,
+	.cra_u			=	{
+		.blkcipher = {
+			.min_keysize	=	ARC4_MIN_KEY_SIZE,
+			.max_keysize	=	ARC4_MAX_KEY_SIZE,
+			.setkey		=	arc4_set_key,
+			.encrypt	=	ecb_arc4_crypt,
+			.decrypt	=	ecb_arc4_crypt,
+		},
+	},
+} };
+
+static int __init arc4_init(void)
 {
-	/* ARC4 does not use a fixed-length IV */
+	return crypto_register_algs(arc4_algs, ARRAY_SIZE(arc4_algs));
 }
 
-
-/**
- * Perform ARC4 encryption or decryption, skipping initial keystream bytes
- *
- * @v key	ARC4 encryption key
- * @v keylen	Key length
- * @v skip	Number of bytes of keystream to skip
- * @v src	Message to encrypt or decrypt
- * @v msglen	Length of message
- * @ret dst	Encrypted or decrypted message
- */
-void arc4_skip ( const void *key, size_t keylen, size_t skip,
-		 const void *src, void *dst, size_t msglen )
+static void __exit arc4_exit(void)
 {
-	struct arc4_ctx ctx;
-	arc4_setkey ( &ctx, key, keylen );
-	arc4_xor ( &ctx, NULL, NULL, skip );
-	arc4_xor ( &ctx, src, dst, msglen );
+	crypto_unregister_algs(arc4_algs, ARRAY_SIZE(arc4_algs));
 }
 
-struct cipher_algorithm arc4_algorithm = {
-	.name = "ARC4",
-	.ctxsize = ARC4_CTX_SIZE,
-	.blocksize = 1,
-	.setkey = arc4_setkey,
-	.setiv = arc4_setiv,
-	.encrypt = arc4_xor,
-	.decrypt = arc4_xor,
-};
+module_init(arc4_init);
+module_exit(arc4_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("ARC4 Cipher Algorithm");
+MODULE_AUTHOR("Jon Oberheide <jon@oberheide.org>");
+MODULE_ALIAS_CRYPTO("arc4");

@@ -6,12 +6,8 @@
  * Derived from cryptoapi implementation, originally based on the
  * public domain implementation written by Colin Plumb in 1993.
  *
- * Reduced object size by around 50% compared to the original Linux
- * version for use in Etherboot by Michael Brown.
- *
  * Copyright (c) Cryptoapi developers.
  * Copyright (c) 2002 James Morris <jmorris@intercode.com.au>
- * Copyright (c) 2006 Michael Brown <mbrown@fensystems.co.uk>
  * 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -19,125 +15,20 @@
  * any later version.
  *
  */
-
-FILE_LICENCE ( GPL2_OR_LATER );
-
-#include <stdint.h>
-#include <string.h>
-#include <byteswap.h>
-#include <gpxe/crypto.h>
-#include <gpxe/md5.h>
-
-struct md5_step {
-	u32 ( * f ) ( u32 b, u32 c, u32 d );
-	u8 coefficient;
-	u8 constant;
-};
-
-static u32 f1(u32 b, u32 c, u32 d)
-{
-	return ( d ^ ( b & ( c ^ d ) ) );
-}
-
-static u32 f2(u32 b, u32 c, u32 d)
-{
-	return ( c ^ ( d & ( b ^ c ) ) );
-}
-
-static u32 f3(u32 b, u32 c, u32 d)
-{
-	return ( b ^ c ^ d );
-}
-
-static u32 f4(u32 b, u32 c, u32 d)
-{
-	return ( c ^ ( b | ~d ) );
-}
-
-static struct md5_step md5_steps[4] = {
-	{
-		.f = f1,
-		.coefficient = 1,
-		.constant = 0,
-	},
-	{
-		.f = f2,
-		.coefficient = 5,
-		.constant = 1,
-	},
-	{
-		.f = f3,
-		.coefficient = 3,
-		.constant = 5,
-	},
-	{
-		.f = f4,
-		.coefficient = 7,
-		.constant = 0,
-	}
-};
-
-static const u8 r[64] = {
-	7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
-	5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
-	4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
-	6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21
-};
-
-static const u32 k[64] = {
-	0xd76aa478UL, 0xe8c7b756UL, 0x242070dbUL, 0xc1bdceeeUL,
-	0xf57c0fafUL, 0x4787c62aUL, 0xa8304613UL, 0xfd469501UL,
-	0x698098d8UL, 0x8b44f7afUL, 0xffff5bb1UL, 0x895cd7beUL,
-	0x6b901122UL, 0xfd987193UL, 0xa679438eUL, 0x49b40821UL,
-	0xf61e2562UL, 0xc040b340UL, 0x265e5a51UL, 0xe9b6c7aaUL,
-	0xd62f105dUL, 0x02441453UL, 0xd8a1e681UL, 0xe7d3fbc8UL,
-	0x21e1cde6UL, 0xc33707d6UL, 0xf4d50d87UL, 0x455a14edUL,
-	0xa9e3e905UL, 0xfcefa3f8UL, 0x676f02d9UL, 0x8d2a4c8aUL,
-	0xfffa3942UL, 0x8771f681UL, 0x6d9d6122UL, 0xfde5380cUL,
-	0xa4beea44UL, 0x4bdecfa9UL, 0xf6bb4b60UL, 0xbebfbc70UL,
-	0x289b7ec6UL, 0xeaa127faUL, 0xd4ef3085UL, 0x04881d05UL,
-	0xd9d4d039UL, 0xe6db99e5UL, 0x1fa27cf8UL, 0xc4ac5665UL,
-	0xf4292244UL, 0x432aff97UL, 0xab9423a7UL, 0xfc93a039UL,
-	0x655b59c3UL, 0x8f0ccc92UL, 0xffeff47dUL, 0x85845dd1UL,
-	0x6fa87e4fUL, 0xfe2ce6e0UL, 0xa3014314UL, 0x4e0811a1UL,
-	0xf7537e82UL, 0xbd3af235UL, 0x2ad7d2bbUL, 0xeb86d391UL,
-};
-
-static void md5_transform(u32 *hash, const u32 *in)
-{
-	u32 a, b, c, d, f, g, temp;
-	int i;
-	struct md5_step *step;
-
-	a = hash[0];
-	b = hash[1];
-	c = hash[2];
-	d = hash[3];
-
-	for ( i = 0 ; i < 64 ; i++ ) {
-		step = &md5_steps[i >> 4];
-		f = step->f ( b, c, d );
-		g = ( ( i * step->coefficient + step->constant ) & 0xf );
-		temp = d;
-		d = c;
-		c = b;
-		a += ( f + k[i] + in[g] );
-		a = ( ( a << r[i] ) | ( a >> ( 32-r[i] ) ) );
-		b += a;
-		a = temp;
-	}
-
-	hash[0] += a;
-	hash[1] += b;
-	hash[2] += c;
-	hash[3] += d;
-}
+#include <crypto/internal/hash.h>
+#include <crypto/md5.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/string.h>
+#include <linux/types.h>
+#include <linux/cryptohash.h>
+#include <asm/byteorder.h>
 
 /* XXX: this stuff can be optimized */
 static inline void le32_to_cpu_array(u32 *buf, unsigned int words)
 {
 	while (words--) {
-		le32_to_cpus(buf);
+		__le32_to_cpus(buf);
 		buf++;
 	}
 }
@@ -145,31 +36,33 @@ static inline void le32_to_cpu_array(u32 *buf, unsigned int words)
 static inline void cpu_to_le32_array(u32 *buf, unsigned int words)
 {
 	while (words--) {
-		cpu_to_le32s(buf);
+		__cpu_to_le32s(buf);
 		buf++;
 	}
 }
 
-static inline void md5_transform_helper(struct md5_ctx *ctx)
+static inline void md5_transform_helper(struct md5_state *ctx)
 {
 	le32_to_cpu_array(ctx->block, sizeof(ctx->block) / sizeof(u32));
 	md5_transform(ctx->hash, ctx->block);
 }
 
-static void md5_init(void *context)
+static int md5_init(struct shash_desc *desc)
 {
-	struct md5_ctx *mctx = context;
+	struct md5_state *mctx = shash_desc_ctx(desc);
 
-	mctx->hash[0] = 0x67452301;
-	mctx->hash[1] = 0xefcdab89;
-	mctx->hash[2] = 0x98badcfe;
-	mctx->hash[3] = 0x10325476;
+	mctx->hash[0] = MD5_H0;
+	mctx->hash[1] = MD5_H1;
+	mctx->hash[2] = MD5_H2;
+	mctx->hash[3] = MD5_H3;
 	mctx->byte_count = 0;
+
+	return 0;
 }
 
-static void md5_update(void *context, const void *data, size_t len)
+static int md5_update(struct shash_desc *desc, const u8 *data, unsigned int len)
 {
-	struct md5_ctx *mctx = context;
+	struct md5_state *mctx = shash_desc_ctx(desc);
 	const u32 avail = sizeof(mctx->block) - (mctx->byte_count & 0x3f);
 
 	mctx->byte_count += len;
@@ -177,7 +70,7 @@ static void md5_update(void *context, const void *data, size_t len)
 	if (avail > len) {
 		memcpy((char *)mctx->block + (sizeof(mctx->block) - avail),
 		       data, len);
-		return;
+		return 0;
 	}
 
 	memcpy((char *)mctx->block + (sizeof(mctx->block) - avail),
@@ -195,11 +88,13 @@ static void md5_update(void *context, const void *data, size_t len)
 	}
 
 	memcpy(mctx->block, data, len);
+
+	return 0;
 }
 
-static void md5_final(void *context, void *out)
+static int md5_final(struct shash_desc *desc, u8 *out)
 {
-	struct md5_ctx *mctx = context;
+	struct md5_state *mctx = shash_desc_ctx(desc);
 	const unsigned int offset = mctx->byte_count & 0x3f;
 	char *p = (char *)mctx->block + offset;
 	int padding = 56 - (offset + 1);
@@ -221,14 +116,56 @@ static void md5_final(void *context, void *out)
 	cpu_to_le32_array(mctx->hash, sizeof(mctx->hash) / sizeof(u32));
 	memcpy(out, mctx->hash, sizeof(mctx->hash));
 	memset(mctx, 0, sizeof(*mctx));
+
+	return 0;
 }
 
-struct digest_algorithm md5_algorithm = {
-	.name		= "md5",
-	.ctxsize	= MD5_CTX_SIZE,
-	.blocksize	= ( MD5_BLOCK_WORDS * 4 ),
-	.digestsize	= MD5_DIGEST_SIZE,
-	.init		= md5_init,
-	.update		= md5_update,
-	.final		= md5_final,
+static int md5_export(struct shash_desc *desc, void *out)
+{
+	struct md5_state *ctx = shash_desc_ctx(desc);
+
+	memcpy(out, ctx, sizeof(*ctx));
+	return 0;
+}
+
+static int md5_import(struct shash_desc *desc, const void *in)
+{
+	struct md5_state *ctx = shash_desc_ctx(desc);
+
+	memcpy(ctx, in, sizeof(*ctx));
+	return 0;
+}
+
+static struct shash_alg alg = {
+	.digestsize	=	MD5_DIGEST_SIZE,
+	.init		=	md5_init,
+	.update		=	md5_update,
+	.final		=	md5_final,
+	.export		=	md5_export,
+	.import		=	md5_import,
+	.descsize	=	sizeof(struct md5_state),
+	.statesize	=	sizeof(struct md5_state),
+	.base		=	{
+		.cra_name	=	"md5",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	MD5_HMAC_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
 };
+
+static int __init md5_mod_init(void)
+{
+	return crypto_register_shash(&alg);
+}
+
+static void __exit md5_mod_fini(void)
+{
+	crypto_unregister_shash(&alg);
+}
+
+module_init(md5_mod_init);
+module_exit(md5_mod_fini);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("MD5 Message Digest Algorithm");
+MODULE_ALIAS_CRYPTO("md5");
